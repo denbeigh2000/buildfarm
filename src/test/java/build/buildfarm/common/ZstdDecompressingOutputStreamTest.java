@@ -22,12 +22,14 @@ import static org.junit.Assert.assertThrows;
 import build.buildfarm.common.ZstdDecompressingOutputStream.FixedBufferPool;
 import com.github.luben.zstd.Zstd;
 import com.google.common.base.Stopwatch;
+import io.prometheus.client.CollectorRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
@@ -182,6 +184,57 @@ public class ZstdDecompressingOutputStreamTest {
 
       assertThat(records).hasSize(afterFirst);
     }
+  }
+
+  /**
+   * An interrupt and a timeout both hand zstd-jni a null, and it reports both with the same
+   * message. The counter label is the only thing that separates a cancelled request from a pool
+   * that cannot keep up.
+   */
+  @Test
+  public void interruptedBorrowCountsApartFromATimeout() throws Exception {
+    // Unbounded, so the borrow blocks until the interrupt rather than timing out.
+    try (FixedBufferPool pool = new FixedBufferPool(/* capacity= */ 1)) {
+      ZstdDecompressingOutputStream held = new ZstdDecompressingOutputStream(sink(), pool);
+      AtomicReference<Throwable> thrown = new AtomicReference<>();
+      AtomicReference<Boolean> flagged = new AtomicReference<>();
+      Thread borrower =
+          new Thread(
+              () -> {
+                try {
+                  new ZstdDecompressingOutputStream(sink(), pool).close();
+                } catch (Throwable t) {
+                  thrown.set(t);
+                }
+                flagged.set(Thread.currentThread().isInterrupted());
+              });
+      double interruptedBefore = borrowFailures("interrupted");
+      double timeoutBefore = borrowFailures("timeout");
+
+      borrower.start();
+      while (pool.getNumWaiters() == 0) {
+        Thread.onSpinWait();
+      }
+      borrower.interrupt();
+      borrower.join();
+      held.close();
+
+      assertThat(thrown.get()).isInstanceOf(IOException.class);
+      assertThat(flagged.get()).isTrue();
+      assertThat(borrowFailures("interrupted") - interruptedBefore).isEqualTo(1.0);
+      assertThat(borrowFailures("timeout") - timeoutBefore).isEqualTo(0.0);
+    }
+  }
+
+  // The registry is process wide and other tests in this JVM share it, so only deltas mean
+  // anything here.
+  private static double borrowFailures(String reason) {
+    Double value =
+        CollectorRegistry.defaultRegistry.getSampleValue(
+            "zstd_buffer_pool_borrow_failures_total",
+            new String[] {"reason"},
+            new String[] {reason});
+    return value == null ? 0 : value;
   }
 
   /** Collects what FixedBufferPool writes, which is the only view of its holder bookkeeping. */

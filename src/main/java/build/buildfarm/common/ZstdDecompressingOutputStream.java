@@ -27,6 +27,7 @@ import build.buildfarm.common.io.FeedbackOutputStream;
 import com.github.luben.zstd.BufferPool;
 import com.github.luben.zstd.ZstdInputStreamNoFinalizer;
 import com.google.protobuf.ByteString;
+import io.prometheus.client.Counter;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -55,6 +56,12 @@ import org.jspecify.annotations.Nullable;
 /** An {@link OutputStream} that use zstd to decompress the content. */
 @Log
 public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
+  private static final Counter borrowFailures =
+      Counter.build()
+          .name("zstd_buffer_pool_borrow_failures")
+          .labelNames("reason")
+          .help("Number of zstd decompression buffer borrows that gave up without a buffer.")
+          .register();
   private final OutputStream out;
   private ByteArrayInputStream inner;
   private final ZstdInputStreamNoFinalizer zis;
@@ -136,7 +143,13 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
         borrows.put(buffer, newBorrow());
         return buffer;
       } catch (NoSuchElementException e) {
+        borrowFailures.labels("timeout").inc();
         logExhausted();
+        throw e;
+      } catch (InterruptedException e) {
+        // Counted here rather than at the zstd-jni boundary, so that every borrow lands on the
+        // same metric no matter who called.
+        borrowFailures.labels("interrupted").inc();
         throw e;
       }
     }
@@ -225,8 +238,8 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
         // for a borrow timeout and for an exhausted pool alike, and both mean the same thing here.
         return null;
       } catch (InterruptedException e) {
-        // Restore the flag. throwIfUnchecked would otherwise wrap this and lose it, and zstd-jni
-        // reports it with the same message it uses for a timeout.
+        // zstd-jni reports this with the same message it uses for a timeout, and there is no
+        // channel to correct it. The restored flag and the borrow counter are the difference.
         Thread.currentThread().interrupt();
         return null;
       } catch (Exception e) {
