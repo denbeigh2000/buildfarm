@@ -159,6 +159,7 @@ worker:
   zstdBufferPoolSize: 2048
   zstdBufferPoolBorrowTimeoutMillis: -1
   zstdBufferPoolTrackBorrowSites: false
+  zstdBufferPoolSlowBorrowWarnMillis: 10000
   compressedBlobTransfer: false
   executionPolicies:
   - name: test
