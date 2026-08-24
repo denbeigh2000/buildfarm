@@ -15,6 +15,7 @@
 package build.buildfarm.common;
 
 import static com.google.common.truth.Truth.assertThat;
+import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertThrows;
 
@@ -25,6 +26,11 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -98,6 +104,92 @@ public class ZstdDecompressingOutputStreamTest {
       assertThat(pool.getNumActive()).isEqualTo(0);
       new ZstdDecompressingOutputStream(sink(), pool).close();
       assertThat(pool.getNumActive()).isEqualTo(0);
+    }
+  }
+
+  /**
+   * The age and the thread of the oldest holder are what separate a stream that nobody closed from
+   * ordinary contention. Neither the timeout itself nor the borrow counter tells them apart, so
+   * this report is the only thing that does.
+   */
+  @Test
+  public void exhaustedPoolReportsItsHolders() throws IOException {
+    List<LogRecord> records = new ArrayList<>();
+    try (FixedBufferPool pool = singleBufferPool();
+        ZstdDecompressingOutputStream held = new ZstdDecompressingOutputStream(sink(), pool);
+        LogCapture capture = new LogCapture(records)) {
+      assertThrows(IOException.class, () -> new ZstdDecompressingOutputStream(sink(), pool));
+
+      // One record, summary and holders together, so a log collector ships one event.
+      assertThat(records).hasSize(1);
+      assertThat(records.get(0).getMessage())
+          .isEqualTo(
+              "zstd buffer pool exhausted: 1/1 buffers active, 1 waiting"
+                  + format("%n  held for 0s by %s", Thread.currentThread().getName()));
+    }
+  }
+
+  /**
+   * invalidateObject destroys a buffer rather than returning it. A record left behind names a
+   * holder that no longer exists, which is the one thing this report must not do.
+   */
+  @Test
+  public void invalidatedBufferLeavesNoHolder() throws Exception {
+    List<LogRecord> records = new ArrayList<>();
+    try (FixedBufferPool pool = singleBufferPool()) {
+      pool.invalidateObject(pool.borrowObject());
+
+      try (ZstdDecompressingOutputStream held = new ZstdDecompressingOutputStream(sink(), pool);
+          LogCapture capture = new LogCapture(records)) {
+        assertThrows(IOException.class, () -> new ZstdDecompressingOutputStream(sink(), pool));
+      }
+
+      assertThat(records).hasSize(1);
+      assertThat(records.get(0).getMessage().split("held for", -1)).hasLength(2);
+    }
+  }
+
+  /**
+   * An empty pool times out every waiter, and each report walks the holder map. Without the
+   * throttle a saturated worker spends its time writing the same warning.
+   */
+  @Test
+  public void repeatedTimeoutsReportOnce() throws IOException {
+    List<LogRecord> records = new ArrayList<>();
+    try (FixedBufferPool pool = singleBufferPool();
+        ZstdDecompressingOutputStream held = new ZstdDecompressingOutputStream(sink(), pool);
+        LogCapture capture = new LogCapture(records)) {
+      assertThrows(IOException.class, () -> new ZstdDecompressingOutputStream(sink(), pool));
+      int afterFirst = records.size();
+      assertThrows(IOException.class, () -> new ZstdDecompressingOutputStream(sink(), pool));
+
+      assertThat(records).hasSize(afterFirst);
+    }
+  }
+
+  /** Collects what FixedBufferPool writes, which is the only view of its holder bookkeeping. */
+  private static final class LogCapture extends Handler implements AutoCloseable {
+    private static final Logger LOGGER =
+        Logger.getLogger(ZstdDecompressingOutputStream.class.getName());
+
+    private final List<LogRecord> records;
+
+    LogCapture(List<LogRecord> records) {
+      this.records = records;
+      LOGGER.addHandler(this);
+    }
+
+    @Override
+    public void publish(LogRecord record) {
+      records.add(record);
+    }
+
+    @Override
+    public void flush() {}
+
+    @Override
+    public void close() {
+      LOGGER.removeHandler(this);
     }
   }
 }
