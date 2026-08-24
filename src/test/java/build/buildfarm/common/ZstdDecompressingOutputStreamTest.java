@@ -26,6 +26,7 @@ import io.prometheus.client.CollectorRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -183,6 +184,47 @@ public class ZstdDecompressingOutputStreamTest {
       assertThrows(IOException.class, () -> new ZstdDecompressingOutputStream(sink(), pool));
 
       assertThat(records).hasSize(afterFirst);
+    }
+  }
+
+  /**
+   * A pool that waits without a bound is the shipped default, and it never times out. A borrow that
+   * had to wait is the only exhaustion it can report, so without this the default config sees
+   * nothing at all.
+   */
+  @Test
+  public void unboundedPoolReportsASlowBorrow() throws Exception {
+    List<LogRecord> records = new ArrayList<>();
+    try (FixedBufferPool pool =
+            new FixedBufferPool(
+                /* capacity= */ 1,
+                /* maxWait= */ Duration.ofMillis(-1),
+                /* trackBorrowSites= */ false,
+                /* slowBorrowWarn= */ Duration.ofMillis(1));
+        LogCapture capture = new LogCapture(records)) {
+      ByteBuffer held = pool.borrowObject();
+      AtomicReference<ByteBuffer> waited = new AtomicReference<>();
+      Thread borrower =
+          new Thread(
+              () -> {
+                try {
+                  waited.set(pool.borrowObject());
+                } catch (Exception e) {
+                  throw new RuntimeException(e);
+                }
+              });
+
+      borrower.start();
+      while (pool.getNumWaiters() == 0) {
+        Thread.onSpinWait();
+      }
+      Thread.sleep(10);
+      pool.returnObject(held);
+      borrower.join();
+      pool.returnObject(waited.get());
+
+      assertThat(records).isNotEmpty();
+      assertThat(records.get(0).getMessage()).startsWith("zstd buffer pool exhausted");
     }
   }
 

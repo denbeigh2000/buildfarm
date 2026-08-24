@@ -101,6 +101,10 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
     private static final Duration EXHAUSTED_LOG_INTERVAL = Duration.ofSeconds(30);
     private static final int EXHAUSTED_LOG_HOLDERS = 3;
 
+    // A pool that waits without a bound never times out, so a borrow that blocked this long is
+    // the only exhaustion it can report. Without it the default config sees nothing at all.
+    private static final Duration DEFAULT_SLOW_BORROW_WARN = Duration.ofSeconds(10);
+
     // ByteBuffer.equals compares contents, so two distinct idle buffers of the same size are equal
     // to each other. A HashMap here would let one borrow record overwrite another.
     private final Map<ByteBuffer, Borrow> borrows =
@@ -112,6 +116,7 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
     // thread name and the borrow age come for free and separate a leak from ordinary contention
     // on their own, so they are always on.
     private final boolean trackBorrowSites;
+    private final Duration slowBorrowWarn;
 
     private static GenericObjectPoolConfig<ByteBuffer> createPoolConfig(
         int capacity, Duration maxWait) {
@@ -139,8 +144,18 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
      *     names the code that holds the buffers. This costs a stack trace on every zstd transfer.
      */
     public FixedBufferPool(int capacity, Duration maxWait, boolean trackBorrowSites) {
+      this(capacity, maxWait, trackBorrowSites, DEFAULT_SLOW_BORROW_WARN);
+    }
+
+    /**
+     * @param slowBorrowWarn how long a borrow has to wait before the pool reports its holders. A
+     *     pool that waits without a bound has no other way to report an exhausted pool.
+     */
+    public FixedBufferPool(
+        int capacity, Duration maxWait, boolean trackBorrowSites, Duration slowBorrowWarn) {
       super(new ZstdDInBufferFactory(), createPoolConfig(capacity, maxWait));
       this.trackBorrowSites = trackBorrowSites;
+      this.slowBorrowWarn = slowBorrowWarn;
     }
 
     // borrowObject() and borrowObject(long) both dispatch here, so this covers every entry
@@ -150,7 +165,9 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
       long start = System.nanoTime();
       try {
         ByteBuffer buffer = super.borrowObject(maxWaitDuration);
-        observeWait(start);
+        if (observeWait(start) >= slowBorrowWarn.toNanos()) {
+          logExhausted();
+        }
         borrows.put(buffer, newBorrow());
         return buffer;
       } catch (NoSuchElementException e) {
@@ -201,7 +218,7 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
      * different fixes, and the borrow timeout alone does not tell them apart.
      */
     private void logExhausted() {
-      // An empty pool fails every waiter, and each report walks the holder map.
+      // An empty pool fails or delays every waiter, and each report walks the holder map.
       long now = System.nanoTime();
       long last = lastExhaustedLogNanos.get();
       if (now - last < EXHAUSTED_LOG_INTERVAL.toNanos()
