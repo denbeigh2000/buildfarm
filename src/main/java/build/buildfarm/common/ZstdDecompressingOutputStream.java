@@ -17,6 +17,7 @@
 package build.buildfarm.common;
 
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Throwables.getStackTraceAsString;
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static java.lang.Math.min;
 import static java.lang.String.format;
@@ -49,6 +50,7 @@ import org.apache.commons.pool2.impl.BaseObjectPoolConfig;
 import org.apache.commons.pool2.impl.DefaultPooledObject;
 import org.apache.commons.pool2.impl.GenericObjectPool;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
+import org.jspecify.annotations.Nullable;
 
 /** An {@link OutputStream} that use zstd to decompress the content. */
 @Log
@@ -74,8 +76,11 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
   }
 
   public static final class FixedBufferPool extends GenericObjectPool<ByteBuffer> {
-    /** Records who took a buffer, so that an exhausted pool can name the holders. */
-    private record Borrow(long startNanos, String thread) {}
+    /**
+     * Records who took a buffer, so that an exhausted pool can name the holders. {@code site} is
+     * null unless the pool tracks borrow sites.
+     */
+    private record Borrow(long startNanos, String thread, @Nullable Throwable site) {}
 
     private static final Duration EXHAUSTED_LOG_INTERVAL = Duration.ofSeconds(30);
     private static final int EXHAUSTED_LOG_HOLDERS = 3;
@@ -86,6 +91,11 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
         Collections.synchronizedMap(new IdentityHashMap<>());
     private final AtomicLong lastExhaustedLogNanos =
         new AtomicLong(System.nanoTime() - EXHAUSTED_LOG_INTERVAL.toNanos());
+
+    // A stack trace capture per borrow is worth paying only while somebody hunts a leak. The
+    // thread name and the borrow age come for free and separate a leak from ordinary contention
+    // on their own, so they are always on.
+    private final boolean trackBorrowSites;
 
     private static GenericObjectPoolConfig<ByteBuffer> createPoolConfig(
         int capacity, Duration maxWait) {
@@ -105,7 +115,16 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
      *     borrow that cannot take a free buffer at once.
      */
     public FixedBufferPool(int capacity, Duration maxWait) {
+      this(capacity, maxWait, /* trackBorrowSites= */ false);
+    }
+
+    /**
+     * @param trackBorrowSites capture a stack trace for every borrow, so that an exhausted pool
+     *     names the code that holds the buffers. This costs a stack trace on every zstd transfer.
+     */
+    public FixedBufferPool(int capacity, Duration maxWait, boolean trackBorrowSites) {
       super(new ZstdDInBufferFactory(), createPoolConfig(capacity, maxWait));
+      this.trackBorrowSites = trackBorrowSites;
     }
 
     // borrowObject() and borrowObject(long) both dispatch here, so this covers every entry
@@ -114,7 +133,7 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
     public ByteBuffer borrowObject(Duration maxWaitDuration) throws Exception {
       try {
         ByteBuffer buffer = super.borrowObject(maxWaitDuration);
-        borrows.put(buffer, new Borrow(System.nanoTime(), Thread.currentThread().getName()));
+        borrows.put(buffer, newBorrow());
         return buffer;
       } catch (NoSuchElementException e) {
         logExhausted();
@@ -135,6 +154,13 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
     public void invalidateObject(ByteBuffer buffer, DestroyMode destroyMode) throws Exception {
       borrows.remove(buffer);
       super.invalidateObject(buffer, destroyMode);
+    }
+
+    private Borrow newBorrow() {
+      return new Borrow(
+          System.nanoTime(),
+          Thread.currentThread().getName(),
+          trackBorrowSites ? new Throwable("borrowed here") : null);
     }
 
     /**
@@ -171,6 +197,9 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
             format(
                 "%n  held for %ds by %s",
                 NANOSECONDS.toSeconds(now - holder.startNanos()), holder.thread()));
+        if (holder.site() != null) {
+          report.append(format("%n%s", getStackTraceAsString(holder.site())));
+        }
       }
       log.log(Level.WARNING, report.toString());
     }

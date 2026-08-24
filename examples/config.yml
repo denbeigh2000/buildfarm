@@ -158,6 +158,7 @@ worker:
   createSymlinkOutputs: false
   zstdBufferPoolSize: 2048
   zstdBufferPoolBorrowTimeoutMillis: -1
+  zstdBufferPoolTrackBorrowSites: false
   compressedBlobTransfer: false
   executionPolicies:
   - name: test

@@ -63,6 +63,7 @@ public class Worker {
   private boolean createSymlinkOutputs = false;
   private int zstdBufferPoolSize = 2048; /* * ZSTD_DStreamInSize (current is 128k) == 256MiB */
   private int zstdBufferPoolBorrowTimeoutMillis = -1; /* negative waits without a bound */
+  private boolean zstdBufferPoolTrackBorrowSites = false;
   private boolean compressedBlobTransfer = false;
   private Set<String> persistentWorkerActionMnemonicAllowlist = Set.of("*");
   private Set<String> ignoreMarketExecutionMnemonics = Set.of("TestRunner");

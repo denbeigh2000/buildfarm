@@ -714,8 +714,8 @@ public final class Worker extends LoggingMain {
         new FixedBufferPool(
             configs.getWorker().getZstdBufferPoolSize(),
             // com.google.protobuf.Duration owns the simple name in this file.
-            java.time.Duration.ofMillis(
-                configs.getWorker().getZstdBufferPoolBorrowTimeoutMillis()));
+            java.time.Duration.ofMillis(configs.getWorker().getZstdBufferPoolBorrowTimeoutMillis()),
+            configs.getWorker().isZstdBufferPoolTrackBorrowSites());
     Gauge.build()
         .name("zstd_buffer_pool_used")
         .help("Current number of Zstd decompression buffers active")

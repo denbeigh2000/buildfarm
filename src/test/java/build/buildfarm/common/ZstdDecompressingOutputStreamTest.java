@@ -113,7 +113,7 @@ public class ZstdDecompressingOutputStreamTest {
    * this report is the only thing that does.
    */
   @Test
-  public void exhaustedPoolReportsItsHolders() throws IOException {
+  public void exhaustedPoolReportsTheHoldersWithoutTheirSites() throws IOException {
     List<LogRecord> records = new ArrayList<>();
     try (FixedBufferPool pool = singleBufferPool();
         ZstdDecompressingOutputStream held = new ZstdDecompressingOutputStream(sink(), pool);
@@ -126,6 +126,23 @@ public class ZstdDecompressingOutputStreamTest {
           .isEqualTo(
               "zstd buffer pool exhausted: 1/1 buffers active, 1 waiting"
                   + format("%n  held for 0s by %s", Thread.currentThread().getName()));
+    }
+  }
+
+  /** Frames are the point of the borrow site switch, and they cost a stack trace per borrow. */
+  @Test
+  public void trackedPoolReportsTheBorrowSite() throws IOException {
+    List<LogRecord> records = new ArrayList<>();
+    try (FixedBufferPool pool =
+            new FixedBufferPool(/* capacity= */ 1, BORROW_TIMEOUT, /* trackBorrowSites= */ true);
+        ZstdDecompressingOutputStream held = new ZstdDecompressingOutputStream(sink(), pool);
+        LogCapture capture = new LogCapture(records)) {
+      assertThrows(IOException.class, () -> new ZstdDecompressingOutputStream(sink(), pool));
+
+      assertThat(records).hasSize(1);
+      assertThat(records.get(0).getMessage()).contains(FixedBufferPool.class.getName());
+      assertThat(records.get(0).getMessage())
+          .contains(ZstdDecompressingOutputStreamTest.class.getName());
     }
   }
 
