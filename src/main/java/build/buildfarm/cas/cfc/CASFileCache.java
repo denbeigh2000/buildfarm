@@ -1111,7 +1111,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
                 // closing uniqueOut, that future never completes and the next getOutput() for
                 // this write waits on it forever, before it can reach reset(). close() resolves
                 // the future and leaves the delegate open, so a partial write stays resumable.
-                // The zstd constructor reaches here whenever the buffer pool refuses a borrow.
+                // The zstd constructor reaches here whenever the buffer pool borrow times out.
                 try {
                   uniqueOut.close();
                 } catch (IOException closeError) {
