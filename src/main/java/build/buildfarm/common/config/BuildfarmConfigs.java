@@ -223,6 +223,7 @@ public final class BuildfarmConfigs {
 
     adjustExecuteStageWidth(configs);
     adjustInputFetchStageWidth(configs);
+    warnZstdBufferPoolBorrowTimeout(configs);
 
     checkExecutionWrapperAvailability(configs);
   }
@@ -285,6 +286,25 @@ public final class BuildfarmConfigs {
     }
 
     return publicName;
+  }
+
+  // A borrow only waits when every buffer is in use. Anything under this is short enough that
+  // an ordinary burst fails transfers, which is almost never what the operator meant to ask for.
+  private static final int ZSTD_BORROW_TIMEOUT_FLOOR_MILLIS = 1000;
+
+  private static void warnZstdBufferPoolBorrowTimeout(BuildfarmConfigs configs) {
+    int millis = configs.getWorker().getZstdBufferPoolBorrowTimeoutMillis();
+    if (millis == 0) {
+      log.warning(
+          "zstdBufferPoolBorrowTimeoutMillis is 0, so a compressed transfer fails whenever no"
+              + " buffer is free. Use a negative value to wait without a bound.");
+    } else if (millis > 0 && millis < ZSTD_BORROW_TIMEOUT_FLOOR_MILLIS) {
+      log.warning(
+          String.format(
+              "zstdBufferPoolBorrowTimeoutMillis is %d, which fails compressed transfers during an"
+                  + " ordinary burst. Values below %d are rarely intended.",
+              millis, ZSTD_BORROW_TIMEOUT_FLOOR_MILLIS));
+    }
   }
 
   private static void adjustCompressedBlobTransfer(BuildfarmConfigs configs) {
