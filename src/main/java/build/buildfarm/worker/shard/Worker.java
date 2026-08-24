@@ -730,6 +730,21 @@ public final class Worker extends LoggingMain {
               }
             })
         .register();
+    // Paired with zstd_buffer_pool_used so that saturation is a ratio, not a number that has to be
+    // compared against the config by hand. Read live, because setMaxTotal is public on the pool
+    // and a value set once here would go quietly stale.
+    Gauge.build()
+        .name("zstd_buffer_pool_capacity")
+        .help("Total number of Zstd decompression buffers available")
+        .create()
+        .setChild(
+            new Gauge.Child() {
+              @Override
+              public double get() {
+                return zstdBufferPool.getMaxTotal();
+              }
+            })
+        .register();
 
     int inputFetchStageWidth = configs.getWorker().getInputFetchStageWidth();
     int executeStageWidth = configs.getWorker().getExecuteStageWidth();
