@@ -226,6 +226,26 @@ public class ZstdDecompressingOutputStreamTest {
     }
   }
 
+  /** The wait distribution is what you alert on, so the metric has to carry every borrow. */
+  @Test
+  public void everyBorrowLandsOnTheWaitHistogram() throws IOException {
+    double before = borrowWaitCount();
+    try (FixedBufferPool pool = singleBufferPool();
+        ZstdDecompressingOutputStream held = new ZstdDecompressingOutputStream(sink(), pool)) {
+      assertThrows(IOException.class, () -> new ZstdDecompressingOutputStream(sink(), pool));
+    }
+
+    // The borrow that took the buffer, and the borrow that timed out waiting for it.
+    assertThat(borrowWaitCount() - before).isEqualTo(2.0);
+  }
+
+  private static double borrowWaitCount() {
+    Double value =
+        CollectorRegistry.defaultRegistry.getSampleValue(
+            "zstd_buffer_pool_borrow_wait_seconds_count");
+    return value == null ? 0 : value;
+  }
+
   // The registry is process wide and other tests in this JVM share it, so only deltas mean
   // anything here.
   private static double borrowFailures(String reason) {

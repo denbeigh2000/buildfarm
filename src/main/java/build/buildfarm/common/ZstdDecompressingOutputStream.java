@@ -28,6 +28,7 @@ import com.github.luben.zstd.BufferPool;
 import com.github.luben.zstd.ZstdInputStreamNoFinalizer;
 import com.google.protobuf.ByteString;
 import io.prometheus.client.Counter;
+import io.prometheus.client.Histogram;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -61,6 +62,14 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
           .name("zstd_buffer_pool_borrow_failures")
           .labelNames("reason")
           .help("Number of zstd decompression buffer borrows that gave up without a buffer.")
+          .register();
+  private static final Histogram borrowWaits =
+      Histogram.build()
+          .name("zstd_buffer_pool_borrow_wait_seconds")
+          .help("Time a zstd decompression buffer borrow spent waiting for a free buffer.")
+          // The default buckets stop at 10s. A saturated pool waits far past that, and the
+          // difference between 30s and 5m is most of the diagnosis.
+          .buckets(0.001, 0.01, 0.1, 1, 10, 60, 300)
           .register();
   private final OutputStream out;
   private ByteArrayInputStream inner;
@@ -138,20 +147,30 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
     // point. Confirmed with commons-pool2 2.13.1.
     @Override
     public ByteBuffer borrowObject(Duration maxWaitDuration) throws Exception {
+      long start = System.nanoTime();
       try {
         ByteBuffer buffer = super.borrowObject(maxWaitDuration);
+        observeWait(start);
         borrows.put(buffer, newBorrow());
         return buffer;
       } catch (NoSuchElementException e) {
+        observeWait(start);
         borrowFailures.labels("timeout").inc();
         logExhausted();
         throw e;
       } catch (InterruptedException e) {
         // Counted here rather than at the zstd-jni boundary, so that every borrow lands on the
         // same metric no matter who called.
+        observeWait(start);
         borrowFailures.labels("interrupted").inc();
         throw e;
       }
+    }
+
+    private static long observeWait(long startNanos) {
+      long waited = System.nanoTime() - startNanos;
+      borrowWaits.observe(waited / 1_000_000_000.0);
+      return waited;
     }
 
     @Override
