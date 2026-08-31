@@ -98,7 +98,7 @@ public final class ZstdBufferPool extends GenericObjectPool<ByteBuffer> implemen
 
   /** Decompress {@code in} as the returned stream is read. */
   public InputStream newDecompressingInputStream(InputStream in) throws IOException {
-    return takeOwnership(in, () -> new ZstdInputStreamNoFinalizer(in, this));
+    return takeOwnership(in, () -> new ZstdDecompressingInputStream(in, this));
   }
 
   private interface StreamConstructor<T> {
