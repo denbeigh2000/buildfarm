@@ -19,6 +19,7 @@ import static java.lang.Math.max;
 
 import com.github.luben.zstd.ZstdOutputStreamNoFinalizer;
 import com.google.common.base.Preconditions;
+import com.google.common.io.Closer;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -46,12 +47,23 @@ public class ZstdCompressingInputStream extends FilterInputStream {
 
   ZstdCompressingInputStream(InputStream in, int size) throws IOException {
     super(in);
-    Preconditions.checkArgument(
-        size >= MIN_BUFFER_SIZE,
-        String.format("The buffer size must be at least %d bytes", MIN_BUFFER_SIZE));
-    this.size = size;
-    this.pis = new PipedInputStream(size);
-    this.zos = new ZstdOutputStreamNoFinalizer(new PipedOutputStream(pis));
+    try {
+      Preconditions.checkArgument(
+          size >= MIN_BUFFER_SIZE,
+          String.format("The buffer size must be at least %d bytes", MIN_BUFFER_SIZE));
+      this.size = size;
+      this.pis = new PipedInputStream(size);
+      this.zos = new ZstdOutputStreamNoFinalizer(new PipedOutputStream(pis));
+    } catch (IOException | RuntimeException e) {
+      // super() took ownership of in, and this constructor hands the stream it was building to
+      // nobody, so no caller is left holding anything that closes in.
+      try {
+        in.close();
+      } catch (IOException closeError) {
+        e.addSuppressed(closeError);
+      }
+      throw e;
+    }
   }
 
   private void reFill() throws IOException {
@@ -98,9 +110,13 @@ public class ZstdCompressingInputStream extends FilterInputStream {
 
   @Override
   public void close() throws IOException {
-    if (zos != null) {
-      zos.close();
+    // zos.close() writes the frame epilogue into the pipe and can fail there. in is the blob
+    // source, and nothing else closes it.
+    try (Closer closer = Closer.create()) {
+      closer.register(in);
+      if (zos != null) {
+        closer.register(zos);
+      }
     }
-    in.close();
   }
 }

@@ -20,6 +20,7 @@ import static com.google.common.base.Throwables.throwIfUnchecked;
 import build.buildfarm.common.io.FeedbackOutputStream;
 import com.github.luben.zstd.BufferPool;
 import com.github.luben.zstd.ZstdInputStreamNoFinalizer;
+import io.prometheus.client.Counter;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
@@ -54,9 +55,15 @@ public final class ZstdBufferPool extends GenericObjectPool<ByteBuffer> implemen
     }
   }
 
-  static int bufferSize() {
+  private static int bufferSize() {
     return (int) ZstdInputStreamNoFinalizer.recommendedDInSize();
   }
+
+  private static final Counter borrowFailures =
+      Counter.build()
+          .name("zstd_buffer_pool_borrow_failures")
+          .help("Number of zstd decompression buffer borrows that got no buffer.")
+          .register();
 
   private static GenericObjectPoolConfig<ByteBuffer> createPoolConfig(int capacity) {
     GenericObjectPoolConfig<ByteBuffer> poolConfig = new GenericObjectPoolConfig<>();
@@ -76,6 +83,10 @@ public final class ZstdBufferPool extends GenericObjectPool<ByteBuffer> implemen
     try {
       return borrowObject();
     } catch (Exception e) {
+      // Silent under the shipped config, where a borrow with no free buffer blocks instead of
+      // failing. Where a deployment does set a wait, a count that keeps rising while the load
+      // does not is a leaked buffer rather than saturation.
+      borrowFailures.inc();
       throwIfUnchecked(e);
       throw new RuntimeException(e);
     }

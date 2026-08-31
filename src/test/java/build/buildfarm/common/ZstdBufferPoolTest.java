@@ -18,12 +18,14 @@ import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertThrows;
 
+import com.github.luben.zstd.BufferPool;
 import com.github.luben.zstd.Zstd;
 import com.google.common.io.ByteStreams;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -35,7 +37,7 @@ import org.junit.runners.JUnit4;
 public class ZstdBufferPoolTest {
   private static final byte[] CONTENT = "Hello, World".getBytes(UTF_8);
 
-  /** Fail a borrow that finds no free buffer, rather than wait for one. */
+  /** A pool whose one buffer is out, and which fails a borrow rather than wait for one. */
   private static ZstdBufferPool exhaustedPool() throws Exception {
     ZstdBufferPool pool = new ZstdBufferPool(/* capacity= */ 1);
     pool.setMaxWait(Duration.ZERO);
@@ -75,6 +77,67 @@ public class ZstdBufferPoolTest {
           };
 
       assertThrows(NoSuchElementException.class, () -> pool.newDecompressingInputStream(delegate));
+      assertThat(closed.get()).isTrue();
+    }
+  }
+
+  /** A pool that hands out real buffers and refuses to take them back. */
+  private static final class RejectingPool implements BufferPool {
+    private final ZstdBufferPool delegate;
+
+    RejectingPool(ZstdBufferPool delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public ByteBuffer get(int size) {
+      return delegate.get(size);
+    }
+
+    @Override
+    public void release(ByteBuffer buffer) {
+      throw new IllegalStateException("pool is closed");
+    }
+  }
+
+  // zstd returns the buffer to the pool before it closes anything, so a pool that refuses the
+  // return leaves the wrapped stream open. Nothing above these streams closes it: the CAS write
+  // waits on the closedFuture that the wrapped stream resolves.
+  @Test
+  public void decompressingOutputStreamClosesTheDelegateWhenTheBufferReturnFails()
+      throws Exception {
+    try (ZstdBufferPool pool = new ZstdBufferPool(/* capacity= */ 1)) {
+      AtomicBoolean closed = new AtomicBoolean(false);
+      OutputStream delegate =
+          new ByteArrayOutputStream() {
+            @Override
+            public void close() {
+              closed.set(true);
+            }
+          };
+      ZstdDecompressingOutputStream decompressing =
+          new ZstdDecompressingOutputStream(delegate, new RejectingPool(pool));
+
+      assertThrows(IllegalStateException.class, decompressing::close);
+      assertThat(closed.get()).isTrue();
+    }
+  }
+
+  @Test
+  public void decompressingInputStreamClosesTheDelegateWhenTheBufferReturnFails() throws Exception {
+    try (ZstdBufferPool pool = new ZstdBufferPool(/* capacity= */ 1)) {
+      AtomicBoolean closed = new AtomicBoolean(false);
+      InputStream delegate =
+          new ByteArrayInputStream(Zstd.compress(CONTENT)) {
+            @Override
+            public void close() {
+              closed.set(true);
+            }
+          };
+      ZstdDecompressingInputStream decompressing =
+          new ZstdDecompressingInputStream(delegate, new RejectingPool(pool));
+
+      assertThrows(IllegalStateException.class, decompressing::close);
       assertThat(closed.get()).isTrue();
     }
   }

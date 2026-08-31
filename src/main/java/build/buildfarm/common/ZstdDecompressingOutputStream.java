@@ -18,6 +18,7 @@ package build.buildfarm.common;
 import build.buildfarm.common.io.FeedbackOutputStream;
 import com.github.luben.zstd.BufferPool;
 import com.github.luben.zstd.ZstdInputStreamNoFinalizer;
+import com.google.common.io.Closer;
 import com.google.protobuf.ByteString;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -68,8 +69,13 @@ public final class ZstdDecompressingOutputStream extends FeedbackOutputStream {
 
   @Override
   public void close() throws IOException {
-    zis.close();
-    out.close();
+    // zis.close() returns the pool buffer before it closes anything, and that return throws when
+    // the pool refuses it. out is the CAS write that a client is waiting on, so leaving it open
+    // wedges the write - close it whatever zis does.
+    try (Closer closer = Closer.create()) {
+      closer.register(out);
+      closer.register(zis);
+    }
   }
 
   @Override

@@ -16,6 +16,7 @@ package build.buildfarm.common;
 
 import com.github.luben.zstd.BufferPool;
 import com.github.luben.zstd.ZstdInputStreamNoFinalizer;
+import com.google.common.io.Closer;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -28,7 +29,21 @@ import java.io.InputStream;
  * that throws.
  */
 public final class ZstdDecompressingInputStream extends FilterInputStream {
+  private final InputStream compressed;
+
   ZstdDecompressingInputStream(InputStream compressed, BufferPool pool) throws IOException {
     super(new ZstdInputStreamNoFinalizer(compressed, pool));
+    this.compressed = compressed;
+  }
+
+  @Override
+  public void close() throws IOException {
+    // in.close() returns the pool buffer before it closes compressed, and that return throws when
+    // the pool refuses it. Closeable.close() is a no-op on a stream that is already closed, so
+    // this costs nothing in the ordinary case where in.close() gets there itself.
+    try (Closer closer = Closer.create()) {
+      closer.register(compressed);
+      closer.register(in);
+    }
   }
 }
