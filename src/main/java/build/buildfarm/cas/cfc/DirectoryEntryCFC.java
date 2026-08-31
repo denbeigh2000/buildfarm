@@ -33,7 +33,7 @@ import build.buildfarm.cas.ContentAddressableStorage;
 import build.buildfarm.common.BuildfarmExecutors;
 import build.buildfarm.common.DigestUtil;
 import build.buildfarm.common.InputStreamFactory;
-import build.buildfarm.common.ZstdDecompressingOutputStream.FixedBufferPool;
+import build.buildfarm.common.ZstdBufferPool;
 import build.buildfarm.common.io.Directories;
 import build.buildfarm.v1test.Digest;
 import com.google.common.cache.Cache;
@@ -78,7 +78,7 @@ public class DirectoryEntryCFC extends CASFileCache {
       ExecutorService expireService,
       Executor accessRecorder,
       ConcurrentMap<String, Entry> storage,
-      FixedBufferPool zstdBufferPool,
+      ZstdBufferPool zstdBufferPool,
       Consumer<Digest> onPut,
       Consumer<Iterable<Digest>> onExpire,
       @Nullable ContentAddressableStorage delegate,

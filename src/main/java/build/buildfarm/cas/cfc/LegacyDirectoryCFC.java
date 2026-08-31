@@ -35,7 +35,7 @@ import build.buildfarm.cas.ContentAddressableStorage;
 import build.buildfarm.common.BuildfarmExecutors;
 import build.buildfarm.common.DigestUtil;
 import build.buildfarm.common.InputStreamFactory;
-import build.buildfarm.common.ZstdDecompressingOutputStream.FixedBufferPool;
+import build.buildfarm.common.ZstdBufferPool;
 import build.buildfarm.common.io.Directories;
 import build.buildfarm.common.io.NamedFileKey;
 import build.buildfarm.v1test.Digest;
@@ -101,7 +101,7 @@ public class LegacyDirectoryCFC extends CASFileCache {
       Executor accessRecorder,
       ConcurrentMap<String, Entry> storage,
       String directoriesIndexDbName,
-      FixedBufferPool zstdBufferPool,
+      ZstdBufferPool zstdBufferPool,
       Consumer<Digest> onPut,
       Consumer<Iterable<Digest>> onExpire,
       @Nullable ContentAddressableStorage delegate,

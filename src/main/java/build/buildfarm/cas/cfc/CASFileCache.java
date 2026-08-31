@@ -61,9 +61,8 @@ import build.buildfarm.common.InputStreamFactory;
 import build.buildfarm.common.Time;
 import build.buildfarm.common.Write;
 import build.buildfarm.common.Write.CompleteWrite;
+import build.buildfarm.common.ZstdBufferPool;
 import build.buildfarm.common.ZstdCompressingInputStream;
-import build.buildfarm.common.ZstdDecompressingOutputStream;
-import build.buildfarm.common.ZstdDecompressingOutputStream.FixedBufferPool;
 import build.buildfarm.common.grpc.Retrier;
 import build.buildfarm.common.grpc.Retrier.Backoff;
 import build.buildfarm.common.io.CountingOutputStream;
@@ -178,7 +177,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
   private volatile Deadline saveLRUAfter = Deadline.after(10, MINUTES);
   private final Path lru;
 
-  private final FixedBufferPool zstdBufferPool;
+  private final ZstdBufferPool zstdBufferPool;
   @Nullable private final ContentAddressableStorage delegate;
   private final boolean delegateSkipLoad;
   private final InputStreamFactory inputStreamFactory;
@@ -290,7 +289,7 @@ public abstract class CASFileCache implements ContentAddressableStorage {
       ExecutorService expireService,
       Executor accessRecorder,
       ConcurrentMap<String, Entry> storage,
-      FixedBufferPool zstdBufferPool,
+      ZstdBufferPool zstdBufferPool,
       Consumer<Digest> onPut,
       Consumer<Iterable<Digest>> onExpire,
       @Nullable ContentAddressableStorage delegate,
@@ -940,27 +939,26 @@ public abstract class CASFileCache implements ContentAddressableStorage {
   /** Wrap a committed write output stream for the compressor that the client is sending. */
   private FeedbackOutputStream writeOutputForCompressor(
       Compressor.Value compressor, UniqueWriteOutputStream uniqueOut) throws IOException {
-    try {
-      switch (compressor) {
-        case IDENTITY:
-          return uniqueOut;
-        case ZSTD:
-          return new ZstdDecompressingOutputStream(uniqueOut, zstdBufferPool);
-        default:
-          throw new UnsupportedOperationException("Unsupported compressor " + compressor);
-      }
-    } catch (IOException | RuntimeException e) {
-      // The caller has already published the write's closedFuture through commitOpenState. If we
-      // leave without closing uniqueOut, that future never completes and the next getOutput() for
-      // this write waits on it forever, before it can reach reset(). close() resolves the future
-      // and leaves the delegate open, so a partial write stays resumable. The zstd constructor
-      // reaches here when the buffer pool refuses a borrow, and so does an unsupported compressor.
-      try {
-        uniqueOut.close();
-      } catch (IOException closeError) {
-        e.addSuppressed(closeError);
-      }
-      throw e;
+    // Every path that leaves here without a stream has to close uniqueOut first. The caller has
+    // already published the write's closedFuture through commitOpenState, so an open uniqueOut
+    // means that future never completes, and the next getOutput() for this write waits on it
+    // forever instead of reaching reset(). close() resolves the future and leaves the delegate
+    // open, so a partial write stays resumable.
+    switch (compressor) {
+      case IDENTITY:
+        return uniqueOut;
+      case ZSTD:
+        // the pool closes uniqueOut when it cannot build the decompressor
+        return zstdBufferPool.newDecompressingOutputStream(uniqueOut);
+      default:
+        UnsupportedOperationException e =
+            new UnsupportedOperationException("Unsupported compressor " + compressor);
+        try {
+          uniqueOut.close();
+        } catch (IOException closeError) {
+          e.addSuppressed(closeError);
+        }
+        throw e;
     }
   }
 

@@ -43,8 +43,7 @@ import build.buildfarm.common.EmptyInputStreamFactory;
 import build.buildfarm.common.FailoverInputStreamFactory;
 import build.buildfarm.common.InputStreamFactory;
 import build.buildfarm.common.LoggingMain;
-import build.buildfarm.common.ZstdDecompressingOutputStream.FixedBufferPool;
-import build.buildfarm.common.ZstdDecompressingOutputStream.ZstdFixedBufferPool;
+import build.buildfarm.common.ZstdBufferPool;
 import build.buildfarm.common.config.BuildfarmConfigs;
 import build.buildfarm.common.config.Cas;
 import build.buildfarm.common.config.GrpcMetrics;
@@ -81,7 +80,6 @@ import build.buildfarm.worker.cgroup.Group;
 import build.buildfarm.worker.resources.LocalResourceSet;
 import build.buildfarm.worker.resources.LocalResourceSet.PoolResource;
 import build.buildfarm.worker.resources.LocalResourceSetUtils;
-import com.github.luben.zstd.ZstdInputStreamNoFinalizer;
 import com.google.common.base.Strings;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableList;
@@ -379,24 +377,13 @@ public final class Worker extends LoggingMain {
    * fewer bytes than the blob itself.
    */
   static InputStreamFactory zstdDecompressingInputStreamFactory(
-      InputStreamFactory base, FixedBufferPool zstdBufferPool) {
+      InputStreamFactory base, ZstdBufferPool zstdBufferPool) {
     return (compressor, digest, offset) -> {
       InputStream zstdStream = base.newInput(Compressor.Value.ZSTD, digest, offset);
       if (compressor != Compressor.Value.IDENTITY) {
         return zstdStream;
       }
-      try {
-        return new ZstdInputStreamNoFinalizer(zstdStream, new ZstdFixedBufferPool(zstdBufferPool));
-      } catch (IOException | RuntimeException e) {
-        // The decompressor takes its pool buffer in the constructor, which throws when the
-        // borrow fails. Nothing else holds zstdStream, so the remote read stays open.
-        try {
-          zstdStream.close();
-        } catch (IOException closeError) {
-          e.addSuppressed(closeError);
-        }
-        throw e;
-      }
+      return zstdBufferPool.newDecompressingInputStream(zstdStream);
     };
   }
 
@@ -404,7 +391,7 @@ public final class Worker extends LoggingMain {
       InputStreamFactory remoteInputStreamFactory,
       ExecutorService removeDirectoryService,
       Executor accessRecorder,
-      FixedBufferPool zstdBufferPool,
+      ZstdBufferPool zstdBufferPool,
       List<Cas> storages)
       throws ConfigurationException {
     ContentAddressableStorage storage = null;
@@ -430,7 +417,7 @@ public final class Worker extends LoggingMain {
       InputStreamFactory remoteInputStreamFactory,
       ExecutorService removeDirectoryService,
       Executor accessRecorder,
-      FixedBufferPool zstdBufferPool,
+      ZstdBufferPool zstdBufferPool,
       Cas cas,
       ContentAddressableStorage delegate,
       boolean delegateSkipLoad)
@@ -468,7 +455,7 @@ public final class Worker extends LoggingMain {
       ExecutorService expireService,
       Executor accessRecorder,
       ConcurrentMap<String, CASFileCache.Entry> storage,
-      FixedBufferPool zstdBufferPool,
+      ZstdBufferPool zstdBufferPool,
       Consumer<Digest> onPut,
       Consumer<Iterable<Digest>> onExpire,
       @Nullable ContentAddressableStorage delegate,
@@ -710,8 +697,7 @@ public final class Worker extends LoggingMain {
     ExecutorService removeDirectoryService = BuildfarmExecutors.getRemoveDirectoryPool();
     ExecutorService accessRecorder = newSingleThreadExecutor();
     ExecutorService fetchService = BuildfarmExecutors.getFetchServicePool();
-    FixedBufferPool zstdBufferPool =
-        new FixedBufferPool(configs.getWorker().getZstdBufferPoolSize());
+    ZstdBufferPool zstdBufferPool = new ZstdBufferPool(configs.getWorker().getZstdBufferPoolSize());
     Gauge.build()
         .name("zstd_buffer_pool_used")
         .help("Current number of Zstd decompression buffers active")

@@ -20,7 +20,7 @@ import static org.junit.Assert.assertThrows;
 
 import build.bazel.remote.execution.v2.Compressor;
 import build.buildfarm.common.InputStreamFactory;
-import build.buildfarm.common.ZstdDecompressingOutputStream.FixedBufferPool;
+import build.buildfarm.common.ZstdBufferPool;
 import build.buildfarm.v1test.Digest;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -40,7 +40,7 @@ public class WorkerTest {
    */
   @Test
   public void zstdInputStreamFactoryClosesTheBaseStreamOnAnExhaustedPool() throws Exception {
-    try (FixedBufferPool pool = new FixedBufferPool(/* capacity= */ 1)) {
+    try (ZstdBufferPool pool = new ZstdBufferPool(/* capacity= */ 1)) {
       // Fail a borrow that finds no free buffer, rather than wait for one.
       pool.setMaxWait(Duration.ZERO);
       AtomicBoolean closed = new AtomicBoolean(false);
@@ -68,7 +68,7 @@ public class WorkerTest {
   /** A compressed read passes the remote stream through, so no buffer is taken. */
   @Test
   public void zstdInputStreamFactoryPassesCompressedReadsThrough() throws Exception {
-    try (FixedBufferPool pool = new FixedBufferPool(/* capacity= */ 1)) {
+    try (ZstdBufferPool pool = new ZstdBufferPool(/* capacity= */ 1)) {
       InputStream base = new ByteArrayInputStream(new byte[0]);
       InputStreamFactory factory =
           zstdDecompressingInputStreamFactory((compressor, digest, offset) -> base, pool);

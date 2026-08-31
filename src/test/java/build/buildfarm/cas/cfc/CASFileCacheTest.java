@@ -52,7 +52,7 @@ import build.buildfarm.common.DigestUtil.HashFunction;
 import build.buildfarm.common.InputStreamFactory;
 import build.buildfarm.common.Write;
 import build.buildfarm.common.Write.NullWrite;
-import build.buildfarm.common.ZstdDecompressingOutputStream.FixedBufferPool;
+import build.buildfarm.common.ZstdBufferPool;
 import build.buildfarm.common.io.Directories;
 import build.buildfarm.common.io.EvenMoreFiles;
 import build.buildfarm.common.io.FeedbackOutputStream;
@@ -112,7 +112,7 @@ class CASFileCacheTest {
   private final Path root;
   private final boolean storeFileDirsIndexInMemory;
   private Map<Digest, ByteString> blobs;
-  private FixedBufferPool zstdBufferPool;
+  private ZstdBufferPool zstdBufferPool;
   private ExecutorService putService;
 
   @Mock private Consumer<Digest> onPut;
@@ -155,7 +155,7 @@ class CASFileCacheTest {
     // A single buffer, and a borrow that fails rather than one that waits, so that one open
     // zstd write exhausts the pool and the next borrow fails at once. Every other test here
     // writes IDENTITY and never touches it.
-    zstdBufferPool = new FixedBufferPool(/* capacity= */ 1);
+    zstdBufferPool = new ZstdBufferPool(/* capacity= */ 1);
     zstdBufferPool.setMaxWait(Duration.ZERO);
     fileCache =
         new LegacyDirectoryCFC(
